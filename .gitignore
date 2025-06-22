@@ -1,3 +1,4 @@
-/vscode
-/vscode-webview-extension-with-react
-/vscode-webview-extension-with-react.rar
+node_modules
+.vscode
+dist
+out
