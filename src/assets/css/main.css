@@ -91,6 +91,10 @@ select::placeholder {
   color: var(--vscode-input-placeholderForeground);
 }
 
+select {
+  margin-top: var(--input-margin-vertical);
+}
+
 textarea {
   min-height: 300px;
   width: auto !important;

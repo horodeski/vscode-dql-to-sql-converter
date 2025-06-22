@@ -1,97 +1,141 @@
-export function changeOrmToSql(text: string): string {
-  const sqlParts: string[] = [];
+export function changeOrmToSql(input: string, targetDb: string): string {
+  let sql = '';
 
-  // SELECT
-  const selectMatch = text.match(/->select\(['"`]([\s\S]*?)['"`]\)/);
-  if (selectMatch) {
-    sqlParts.push(`SELECT ${selectMatch[1]}`);
+  const lines = input.split('\n').map(line => line.trim());
+
+  const selectLines: string[] = [];
+  let fromLine = '';
+  const joinLines: string[] = [];
+  const whereClauses: string[] = [];
+  const groupByClauses: string[] = [];
+  const havingClauses: string[] = [];
+  const orderByClauses: string[] = [];
+  let limitLine = '';
+  let offsetLine = '';
+  const params: Record<string, string> = {};
+
+  for (const line of lines) {
+    if (line.startsWith('->select')) {
+      const content = line.match(/'(.+)'/);
+      if (content) selectLines.push(`SELECT ${content[1]}`);
+    }
+
+    if (line.startsWith('->from')) {
+      const content = line.match(/'(.+?)',\s*'(.+?)'/);
+      if (content) fromLine = `FROM ${content[1]} ${content[2]}`;
+    }
+
+    if (line.startsWith('->leftJoin') || line.startsWith('->innerJoin') || line.startsWith('->rightJoin')) {
+      const type = line.startsWith('->leftJoin') ? 'LEFT JOIN' :
+        line.startsWith('->innerJoin') ? 'INNER JOIN' : 'RIGHT JOIN';
+      const content = line.match(/'(.+?)',\s*'(.+?)'/);
+      if (content) joinLines.push(`${type} ${content[1]} ${content[2]} ON ???`);
+    }
+
+    // WHERE / AND WHERE / OR WHERE
+    if (line.startsWith('->where') || line.startsWith('->andWhere') || line.startsWith('->orWhere')) {
+      const content = line.match(/'(.+)'/);
+      if (content) {
+        if (line.startsWith('->where')) whereClauses.push(content[1]);
+        else if (line.startsWith('->andWhere')) whereClauses.push('AND ' + content[1]);
+        else if (line.startsWith('->orWhere')) whereClauses.push('OR ' + content[1]);
+      }
+    }
+
+    // GROUP BY
+    if (line.startsWith('->groupBy')) {
+      const content = line.match(/'(.+)'/);
+      if (content) groupByClauses.push(content[1]);
+    }
+
+    // HAVING / AND HAVING / OR HAVING
+    if (line.startsWith('->having') || line.startsWith('->andHaving') || line.startsWith('->orHaving')) {
+      const content = line.match(/'(.+)'/);
+      if (content) {
+        if (line.startsWith('->having')) havingClauses.push(content[1]);
+        else if (line.startsWith('->andHaving')) havingClauses.push('AND ' + content[1]);
+        else if (line.startsWith('->orHaving')) havingClauses.push('OR ' + content[1]);
+      }
+    }
+
+    // ORDER BY
+    if (line.startsWith('->orderBy') || line.startsWith('->addOrderBy')) {
+      const content = line.match(/'(.+?)',\s*'(.+?)'/);
+      if (content) orderByClauses.push(`${content[1]} ${content[2].toUpperCase()}`);
+    }
+
+    // Params
+    if (line.startsWith('->setParameter')) {
+      const param = line.match(/'(.+?)',\s*(.+)/);
+      if (param) params[param[1]] = param[2];
+    }
+
+    // LIMIT
+    if (line.startsWith('->setMaxResults')) {
+      const number = line.match(/\((\d+)\)/);
+      if (number) limitLine = `LIMIT ${number[1]}`;
+    }
+
+    // OFFSET
+    if (line.startsWith('->setFirstResult')) {
+      const number = line.match(/\((\d+)\)/);
+      if (number) offsetLine = `OFFSET ${number[1]}`;
+    }
   }
 
-  // FROM
-  const fromMatch = text.match(/->from\(['"`](\w+)['"`]\s*,\s*['"`](\w+)['"`]\)/);
-  if (fromMatch) {
-    sqlParts.push(`FROM ${fromMatch[1]} ${fromMatch[2]}`);
+  // -----------------------------
+  // Substituir parâmetros nos WHERE / HAVING
+  // -----------------------------
+  const replaceParams = (clause: string) => {
+    Object.entries(params).forEach(([key, val]) => {
+      const finalVal = targetDb === 'oracle'
+        ? (val === 'true' ? '1' : (val === 'false' ? '0' : val))
+        : val;
+      clause = clause.replace(new RegExp(`:${key}\\b`, 'g'), finalVal);
+    });
+    return clause;
+  };
+
+  const whereSql = whereClauses.length
+    ? 'WHERE ' + whereClauses.map(c => replaceParams(c)).join(' ')
+    : '';
+
+  const havingSql = havingClauses.length
+    ? 'HAVING ' + havingClauses.map(c => replaceParams(c)).join(' ')
+    : '';
+
+  // -----------------------------
+  // Ajuste de LIMIT/OFFSET conforme banco alvo
+  // -----------------------------
+  let limitOffsetSql = '';
+  if (limitLine || offsetLine) {
+    if (targetDb === 'mysql' || targetDb === 'postgres') {
+      limitOffsetSql = [limitLine, offsetLine].filter(Boolean).join(' ');
+    } else if (targetDb === 'oracle') {
+      const limitNum = limitLine ? limitLine.replace('LIMIT ', '') : '';
+      const offsetNum = offsetLine ? offsetLine.replace('OFFSET ', '') : '';
+
+      if (limitNum && offsetNum) {
+        limitOffsetSql = `OFFSET ${offsetNum} ROWS FETCH NEXT ${limitNum} ROWS ONLY`;
+      } else if (limitNum) {
+        limitOffsetSql = `FETCH FIRST ${limitNum} ROWS ONLY`;
+      } else if (offsetNum) {
+        limitOffsetSql = `OFFSET ${offsetNum} ROWS`;
+      }
+    }
   }
 
-  // JOINs
-  const joinRegex = /->(innerJoin|leftJoin|rightJoin)\(\s*['"`](\w+)\.(\w+)['"`]\s*,\s*['"`](\w+)['"`]\s*\)/gi;
-  let joinMatch;
-  while ((joinMatch = joinRegex.exec(text)) !== null) {
-    const joinType = joinMatch[1].toUpperCase().replace('INNERJOIN', 'INNER JOIN').replace('LEFTJOIN', 'LEFT JOIN').replace('RIGHTJOIN', 'RIGHT JOIN');
-    const parentAlias = joinMatch[2];
-    const relation = joinMatch[3];
-    const alias = joinMatch[4];
-    sqlParts.push(`${joinType} ${relation} ${alias} ON ${alias}.${parentAlias}_id = ${parentAlias}.id`);
-  }
+  // -----------------------------
+  // Montar SQL Final
+  // -----------------------------
+  sql += selectLines.join('\n') + '\n';
+  if (fromLine) sql += fromLine + '\n';
+  if (joinLines.length) sql += joinLines.join('\n') + '\n';
+  if (whereSql) sql += whereSql + '\n';
+  if (groupByClauses.length) sql += 'GROUP BY ' + groupByClauses.join(', ') + '\n';
+  if (havingSql) sql += havingSql + '\n';
+  if (orderByClauses.length) sql += 'ORDER BY ' + orderByClauses.join(', ') + '\n';
+  if (limitOffsetSql) sql += limitOffsetSql + '\n';
 
-  // WHERE
-  const whereMatch = text.match(/->where\(\s*['"`]([\s\S]*?)['"`]\s*\)/);
-  if (whereMatch) {
-    sqlParts.push(`WHERE ${whereMatch[1]}`);
-  }
-
-  // AND WHERE
-  const andWhereRegex = /->andWhere\(\s*['"`]([\s\S]*?)['"`]\s*\)/gi;
-  let andWhereMatch;
-  while ((andWhereMatch = andWhereRegex.exec(text)) !== null) {
-    sqlParts.push(`AND ${andWhereMatch[1]}`);
-  }
-
-  // OR WHERE
-  const orWhereRegex = /->orWhere\(\s*['"`]([\s\S]*?)['"`]\s*\)/gi;
-  let orWhereMatch;
-  while ((orWhereMatch = orWhereRegex.exec(text)) !== null) {
-    sqlParts.push(`OR ${orWhereMatch[1]}`);
-  }
-
-  // GROUP BY
-  const groupByMatch = text.match(/->groupBy\(\s*['"`]([\s\S]*?)['"`]\s*\)/);
-  if (groupByMatch) {
-    sqlParts.push(`GROUP BY ${groupByMatch[1]}`);
-  }
-
-  // HAVING
-  const havingMatch = text.match(/->having\(\s*['"`]([\s\S]*?)['"`]\s*\)/);
-  if (havingMatch) {
-    sqlParts.push(`HAVING ${havingMatch[1]}`);
-  }
-
-  // ORDER BY
-  const orderByRegex = /->orderBy\(\s*['"`]([\s\S]*?)['"`]\s*,\s*['"`]([\s\S]*?)['"`]\s*\)/gi;
-  let orderByMatch;
-  while ((orderByMatch = orderByRegex.exec(text)) !== null) {
-    sqlParts.push(`ORDER BY ${orderByMatch[1]} ${orderByMatch[2]}`);
-  }
-
-  // LIMIT
-  const limitMatch = text.match(/->setMaxResults\(\s*(\d+)\s*\)/);
-  if (limitMatch) {
-    sqlParts.push(`LIMIT ${limitMatch[1]}`);
-  }
-
-  // OFFSET
-  const offsetMatch = text.match(/->setFirstResult\(\s*(\d+)\s*\)/);
-  if (offsetMatch) {
-    sqlParts.push(`OFFSET ${offsetMatch[1]}`);
-  }
-
-  // Params
-  const paramRegex = /->setParameter\(\s*['"`](\w+)['"`]\s*,\s*([\s\S]*?)\)/gi;
-  const paramMap: Record<string, string> = {};
-  let paramMatch;
-  while ((paramMatch = paramRegex.exec(text)) !== null) {
-    let value = paramMatch[2].trim();
-    if (value === 'true') value = '1';
-    else if (value === 'false') value = '0';
-    else if (!isNaN(Number(value))) value = value;
-    else value = value.replace(/['"`]/g, '');
-    paramMap[paramMatch[1]] = value;
-  }
-
-  // Substituir params nas linhas SQL
-  const finalSql = sqlParts
-    .map((line) => line.replace(/:(\w+)/g, (_match, param) => (paramMap[param] !== undefined ? paramMap[param] : `:${param}`)))
-    .join('\n');
-
-  return finalSql + ';';
+  return sql.trim();
 }

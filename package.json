@@ -1,6 +1,6 @@
 {
-  "name": "vue3baseextension",
-  "displayName": "vue3BaseExtension",
+  "name": "sqlconverter",
+  "displayName": "sqlconverter",
   "description": "",
   "version": "0.0.1",
   "engines": {
@@ -23,20 +23,20 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "vue-3-base-view",
-          "title": "Vue 3 Base Extension",
-          "icon": "src/assets/img/default.png"
+          "id": "sql-converter",
+          "title": "SQL converter",
+          "icon": "src/assets/img/Vector.svg"
         }
       ]
     },
     "views": {
-      "vue-3-base-view": [
+      "sql-converter": [
         {
           "type": "webview",
           "id": "base-view-sidebar",
-          "name": "Vue 3 Base Extension",
-          "icon": "src/assets/img/default.png",
-          "contextualTitle": "Vue 3 Base Extension"
+          "name": "SQL converter",
+          "icon": "src/assets/img/Vector.svg",
+          "contextualTitle": "SQL converter"
         }
       ]
     }

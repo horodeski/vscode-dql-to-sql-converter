@@ -7,14 +7,15 @@ export function ChangeSqlToOrm(sql: string): string {
     ormLines.push(`->select('${selectMatch[1].trim()}')`);
   }
 
-  // FROM
-  const fromMatch = sql.match(/FROM\s+(\w+)\s+(\w+)/i);
+  // FROM (com ou sem alias)
+  const fromMatch = sql.match(/FROM\s+(\w+)(?:\s+(\w+))?/i);
   if (fromMatch) {
-    ormLines.push(`->from('${fromMatch[1]}', '${fromMatch[2]}')`);
+    const table = fromMatch[1];
+    const alias = fromMatch[2] ?? table[0]; // Se não tiver alias, usa a primeira letra da tabela
+    ormLines.push(`->from('${table}', '${alias}')`);
   }
 
-  // JOINs
-  // Captura LEFT, INNER, RIGHT JOINs com ON clause simples
+  // JOINs (LEFT, INNER, RIGHT JOINs com ON)
   const joinRegex = /(LEFT|INNER|RIGHT)\s+JOIN\s+(\w+)\s+(\w+)\s+ON\s+([^\s]+)\s*=\s*([^\s]+)/gi;
   let joinMatch;
   while ((joinMatch = joinRegex.exec(sql)) !== null) {
@@ -24,46 +25,33 @@ export function ChangeSqlToOrm(sql: string): string {
     const leftSide = joinMatch[4];
     const rightSide = joinMatch[5];
 
-    // Assumindo padrão alias.relationship para ORM
-    // Exemplo: o.user_id = u.id vira leftJoin('u.orders', 'o')
-    // Vamos extrair o alias pai (ex: 'u') e a relação (ex: 'orders')
-
     let parentAlias = '';
     let relation = '';
 
-    // Se leftSide = o.user_id, split por '.' e pega alias + relação
     const leftParts = leftSide.split('.');
-    if (leftParts.length === 2) {
-      const [leftAlias, leftField] = leftParts;
-      // O rightSide deve ser algo como u.id
-      const rightParts = rightSide.split('.');
-      if (rightParts.length === 2) {
-        const [rightAlias, rightField] = rightParts;
+    const rightParts = rightSide.split('.');
 
-        // Se rightField é id e leftField termina com _id, o relacionamento é entre rightAlias e leftField sem '_id'
-        if (rightField === 'id' && leftField.endsWith('_id')) {
-          parentAlias = rightAlias;
-          relation = leftField.slice(0, -3); // remove _id
-        }
+    if (leftParts.length === 2 && rightParts.length === 2) {
+      const [leftAlias, leftField] = leftParts;
+      const [rightAlias, rightField] = rightParts;
+
+      if (rightField === 'id' && leftField.endsWith('_id')) {
+        parentAlias = rightAlias;
+        relation = leftField.slice(0, -3); // remove '_id'
       }
     }
 
     if (parentAlias && relation) {
       ormLines.push(`->${joinType}Join('${parentAlias}.${relation}', '${alias}')`);
     } else {
-      // Caso não consiga inferir, colocar join genérico
       ormLines.push(`->${joinType}Join('${table}', '${alias}')`);
     }
   }
 
-  // WHERE (inclui AND, OR)
-  const whereMatch = sql.match(/WHERE\s+([\s\S]*?)(GROUP BY|HAVING|ORDER BY|LIMIT|OFFSET|$)/i);
+  // WHERE (com AND / OR)
+  const whereMatch = sql.match(/WHERE\s+([\s\S]*?)(GROUP BY|HAVING|ORDER BY|LIMIT|OFFSET|FETCH|$)/i);
   if (whereMatch) {
-    // Quebra as condições por AND / OR (considerando que AND / OR estejam em maiúsculas)
     const conditions = whereMatch[1].trim().split(/\s+(AND|OR)\s+/i);
-
-    // conditions terá uma lista tipo: ['cond1', 'AND', 'cond2', 'OR', 'cond3', ...]
-    // Itera para montar as chamadas ->where, ->andWhere, ->orWhere
     for (let i = 0; i < conditions.length; i++) {
       const cond = conditions[i].trim();
       if (i === 0) {
@@ -76,37 +64,46 @@ export function ChangeSqlToOrm(sql: string): string {
           ormLines.push(`->orWhere('${cond}')`);
         }
       }
-      i++; // pula o operador na próxima iteração
+      i++; // pula o operador
     }
   }
 
   // GROUP BY
-  const groupByMatch = sql.match(/GROUP BY\s+([\s\S]*?)(HAVING|ORDER BY|LIMIT|OFFSET|$)/i);
+  const groupByMatch = sql.match(/GROUP BY\s+([\s\S]*?)(HAVING|ORDER BY|LIMIT|OFFSET|FETCH|$)/i);
   if (groupByMatch) {
     ormLines.push(`->groupBy('${groupByMatch[1].trim()}')`);
   }
 
   // HAVING
-  const havingMatch = sql.match(/HAVING\s+([\s\S]*?)(ORDER BY|LIMIT|OFFSET|$)/i);
+  const havingMatch = sql.match(/HAVING\s+([\s\S]*?)(ORDER BY|LIMIT|OFFSET|FETCH|$)/i);
   if (havingMatch) {
     ormLines.push(`->having('${havingMatch[1].trim()}')`);
   }
 
-  // ORDER BY
-  const orderByMatch = sql.match(/ORDER BY\s+([\w\.\,\s]+)\s+(ASC|DESC)/i);
+  // ORDER BY (cobre múltiplas colunas e ASC/DESC)
+  const orderByMatch = sql.match(/ORDER BY\s+([\w\.\,\s]+?)(\s+ASC|\s+DESC|$)/i);
   if (orderByMatch) {
-    ormLines.push(`->orderBy('${orderByMatch[1].trim()}', '${orderByMatch[2].toUpperCase()}')`);
+    const columns = orderByMatch[1].trim();
+    const direction = (orderByMatch[2] || 'ASC').trim().toUpperCase();
+    ormLines.push(`->orderBy('${columns}', '${direction}')`);
   }
 
-  // LIMIT
+  // OFFSET/FETCH NEXT (SQL Server / Oracle syntax)
+  const offsetFetchMatch = sql.match(/OFFSET\s+(\d+)\s+ROWS\s+FETCH\s+NEXT\s+(\d+)\s+ROWS\s+ONLY/i);
+  if (offsetFetchMatch) {
+    ormLines.push(`->setFirstResult(${offsetFetchMatch[1]})`);
+    ormLines.push(`->setMaxResults(${offsetFetchMatch[2]})`);
+  }
+
+  // LIMIT (MySQL/Postgres style)
   const limitMatch = sql.match(/LIMIT\s+(\d+)/i);
   if (limitMatch) {
     ormLines.push(`->setMaxResults(${limitMatch[1]})`);
   }
 
-  // OFFSET
+  // OFFSET (MySQL/Postgres style, só se não tiver OFFSET/FETCH já detectado)
   const offsetMatch = sql.match(/OFFSET\s+(\d+)/i);
-  if (offsetMatch) {
+  if (offsetMatch && !offsetFetchMatch) {
     ormLines.push(`->setFirstResult(${offsetMatch[1]})`);
   }
 
