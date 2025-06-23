@@ -2,7 +2,7 @@
 
 Converta queries de ORM (ex: Doctrine/DQL) para SQL diretamente dentro da sua IDE!
 
-![Preview](https://github.com/horodeski/vscode-dql-to-sql-converter/raw/main/preview.png)
+![Preview](https://github.com/horodeski/vscode-dql-to-sql-converter/blob/main/extension/preview.png)
 
 ## 📌 Features
 
@@ -27,7 +27,7 @@ Converta queries de ORM (ex: Doctrine/DQL) para SQL diretamente dentro da sua ID
 
 > Exemplo de como a extensão aparece no VS Code:
 
-![Interface Example](https://github.com/horodeski/vscode-dql-to-sql-converter/raw/main/preview.png)
+![Interface Example](https://github.com/horodeski/vscode-dql-to-sql-converter/blob/main/extension/preview.png)
 
 ## 🛠️ Requisitos
 
