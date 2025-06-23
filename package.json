@@ -1,11 +1,14 @@
 {
-  "name": "sqlconverter",
-  "displayName": "sqlconverter",
+  "name": "dql-to-sql",
+  "displayName": "Doctrine DQL to SQL Converter",
   "description": "",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.74.0"
   },
+  "activationEvents": [
+    "onView:base-view-sidebar"
+  ],
   "categories": [
     "Other"
   ],
@@ -25,7 +28,7 @@
         {
           "id": "sql-converter",
           "title": "SQL converter",
-          "icon": "src/assets/img/Vector.svg"
+          "icon": "extension/Vector.svg"
         }
       ]
     },
@@ -35,7 +38,7 @@
           "type": "webview",
           "id": "base-view-sidebar",
           "name": "SQL converter",
-          "icon": "src/assets/img/Vector.svg",
+          "icon": "extension/Vector.svg",
           "contextualTitle": "SQL converter"
         }
       ]
@@ -46,6 +49,28 @@
     "@vitest/ui": "^0.26.2",
     "vue": "^3.2.45",
     "vue-i18n": "9"
+  },
+  "publisher": "GeovanaSophiaHorodeski",
+  "icon": "extension/image.png",
+  "galleryBanner": {
+    "color": "#030518",
+    "theme": "dark"
+  },
+  "keywords": [
+    "php",
+    "sql",
+    "doctrine",
+    "orm",
+    "postgres",
+    "oracle",
+    "mysql"
+  ],
+  "repository": {
+    "url": "https://github.com/horodeski/vscode-dql-to-sql-converter"
+  },
+  "homepage": "https://github.com/horodeski/vscode-dql-to-sql-converter",
+  "bugs": {
+    "url": "https://github.com/horodeski/vscode-dql-to-sql-converter/issues"
   },
   "devDependencies": {
     "@iconify-json/mdi": "^1.1.39",
