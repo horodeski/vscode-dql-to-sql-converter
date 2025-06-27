@@ -15,21 +15,41 @@ export function changeOrmToSql(input: string, targetDb: string): string {
   const params: Record<string, string> = {};
 
   for (const line of lines) {
+    // SELECT
     if (line.startsWith('->select')) {
       const content = line.match(/'(.+)'/);
       if (content) selectLines.push(`SELECT ${content[1]}`);
     }
 
+    // FROM
     if (line.startsWith('->from')) {
-      const content = line.match(/'(.+?)',\s*'(.+?)'/);
-      if (content) fromLine = `FROM ${content[1]} ${content[2]}`;
+      const content = line.match(/\(\s*(?:'([^']+)'|([A-Za-z_\\]+::class))\s*,\s*'([^']+)'\s*\)/);
+      if (content) {
+        const table = (content[1] || content[2]).replace('::class', '');
+        const alias = content[3];
+        fromLine = `FROM ${table} ${alias}`;
+      }
     }
-
-    if (line.startsWith('->leftJoin') || line.startsWith('->innerJoin') || line.startsWith('->rightJoin')) {
+    
+    // LEFTJOIN / INNERJOIN / RIGHTJOIN
+    if (
+      line.startsWith('->leftJoin') ||
+      line.startsWith('->innerJoin') ||
+      line.startsWith('->rightJoin')
+    ) {
       const type = line.startsWith('->leftJoin') ? 'LEFT JOIN' :
         line.startsWith('->innerJoin') ? 'INNER JOIN' : 'RIGHT JOIN';
-      const content = line.match(/'(.+?)',\s*'(.+?)'/);
-      if (content) joinLines.push(`${type} ${content[1]} ${content[2]} ON ???`);
+
+      const content = line.match(
+        /\(\s*(?:'([^']+)'|([A-Za-z_\\]+::class))\s*,\s*'([^']+)'\s*(?:,\s*'([^']+)')?\s*\)/
+      );
+
+      if (content) {
+        const table = (content[1] || content[2]).replace('::class', '');
+        const alias = content[3];
+        const condition = content[4] || '???'; // fallback se não tiver condição
+        joinLines.push(`${type} ${table} ${alias} ON ${condition}`);
+      }
     }
 
     // WHERE / AND WHERE / OR WHERE
