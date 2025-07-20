@@ -1,7 +1,93 @@
+function splitSelectArguments(input: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  let quoteChar = '';
+  let parenLevel = 0;
+
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i];
+    const prev = input[i - 1];
+
+    if ((char === "'" || char === '"') && prev !== '\\') {
+      if (inQuotes && char === quoteChar) {
+        inQuotes = false;
+      } else if (!inQuotes) {
+        inQuotes = true;
+        quoteChar = char;
+      }
+      current += char;
+    } else if (!inQuotes && char === '(') {
+      parenLevel++;
+      current += char;
+    } else if (!inQuotes && char === ')') {
+      parenLevel--;
+      current += char;
+    } else if (!inQuotes && parenLevel === 0 && char === ',') {
+      args.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  if (current.trim()) args.push(current.trim());
+  return args;
+}
+
+// Junta chamadas multilinha como ->select('a', 'b', ... )
+function joinMultilineCalls(lines: string[]): string[] {
+  const result = [];
+  let buffer = '';
+  let openParens = 0;
+
+  for (const line of lines) {
+    if (buffer.length > 0) {
+      buffer += ' ' + line;
+      openParens += (line.match(/\(/g) || []).length;
+      openParens -= (line.match(/\)/g) || []).length;
+
+      if (openParens <= 0) {
+        result.push(buffer.trim());
+        buffer = '';
+        openParens = 0;
+      }
+    } else {
+      // Detecta início de chamadas
+      if (
+        line.startsWith('->select') ||
+        line.startsWith('->where') ||
+        line.startsWith('->andWhere') ||
+        line.startsWith('->orWhere') ||
+        line.startsWith('->groupBy') ||
+        line.startsWith('->having') ||
+        line.startsWith('->andHaving') ||
+        line.startsWith('->orHaving')
+      ) {
+        buffer = line;
+        openParens = (line.match(/\(/g) || []).length - (line.match(/\)/g) || []).length;
+
+        if (openParens <= 0) {
+          result.push(buffer.trim());
+          buffer = '';
+          openParens = 0;
+        }
+      } else {
+        result.push(line);
+      }
+    }
+  }
+
+  if (buffer.length > 0) {
+    result.push(buffer.trim());
+  }
+
+  return result;
+}
+
 export function changeOrmToSql(input: string, targetDb: string): string {
   let sql = '';
 
-  const lines = input.split('\n').map(line => line.trim());
+  const lines = joinMultilineCalls(input.split('\n').map(line => line.trim()));
 
   const selectLines: string[] = [];
   let fromLine = '';
@@ -17,21 +103,27 @@ export function changeOrmToSql(input: string, targetDb: string): string {
   for (const line of lines) {
     // SELECT
     if (line.startsWith('->select')) {
-      const content = line.match(/'(.+)'/);
-      if (content) selectLines.push(`SELECT ${content[1]}`);
+      const content = line.match(/\(([\s\S]+)\)/);
+      if (content) {
+        const args = splitSelectArguments(content[1]).map(arg => {
+          return arg.replace(/^['"]|['"]$/g, '');
+        });
+        selectLines.length = 0;
+        selectLines.push('SELECT ' + args.join(', '));
+      }
     }
 
     // FROM
     if (line.startsWith('->from')) {
-      const content = line.match(/\(\s*(?:'([^']+)'|([A-Za-z_\\]+::class))\s*,\s*'([^']+)'\s*\)/);
+      const content = line.match(/\(\s*(?:'([^']+)'|([A-Za-z_\\]+)::class)\s*,\s*['"]([^'"]+)['"]\s*\)/);
       if (content) {
         const table = (content[1] || content[2]).replace('::class', '');
         const alias = content[3];
         fromLine = `FROM ${table} ${alias}`;
       }
     }
-    
-    // LEFTJOIN / INNERJOIN / RIGHTJOIN
+
+    // JOINs
     if (
       line.startsWith('->leftJoin') ||
       line.startsWith('->innerJoin') ||
@@ -41,20 +133,20 @@ export function changeOrmToSql(input: string, targetDb: string): string {
         line.startsWith('->innerJoin') ? 'INNER JOIN' : 'RIGHT JOIN';
 
       const content = line.match(
-        /\(\s*(?:'([^']+)'|([A-Za-z_\\]+::class))\s*,\s*'([^']+)'\s*(?:,\s*'([^']+)')?\s*\)/
+        /\(\s*(?:'([^']+)'|([A-Za-z_\\]+)::class)\s*,\s*'([^']+)'\s*,\s*(?:WITH|ON)\s*,\s*'([^']+)'\s*\)/
       );
 
       if (content) {
         const table = (content[1] || content[2]).replace('::class', '');
         const alias = content[3];
-        const condition = content[4] || '???'; // fallback se não tiver condição
+        const condition = content[4];
         joinLines.push(`${type} ${table} ${alias} ON ${condition}`);
       }
     }
 
-    // WHERE / AND WHERE / OR WHERE
+    // WHERE / AND / OR WHERE
     if (line.startsWith('->where') || line.startsWith('->andWhere') || line.startsWith('->orWhere')) {
-      const content = line.match(/'(.+)'/);
+      const content = line.match(/\(\s*['"](.+?)['"]\s*\)/);
       if (content) {
         if (line.startsWith('->where')) whereClauses.push(content[1]);
         else if (line.startsWith('->andWhere')) whereClauses.push('AND ' + content[1]);
@@ -64,13 +156,13 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 
     // GROUP BY
     if (line.startsWith('->groupBy')) {
-      const content = line.match(/'(.+)'/);
+      const content = line.match(/\(\s*['"](.+?)['"]\s*\)/);
       if (content) groupByClauses.push(content[1]);
     }
 
-    // HAVING / AND HAVING / OR HAVING
+    // HAVING
     if (line.startsWith('->having') || line.startsWith('->andHaving') || line.startsWith('->orHaving')) {
-      const content = line.match(/'(.+)'/);
+      const content = line.match(/\(\s*['"](.+?)['"]\s*\)/);
       if (content) {
         if (line.startsWith('->having')) havingClauses.push(content[1]);
         else if (line.startsWith('->andHaving')) havingClauses.push('AND ' + content[1]);
@@ -80,13 +172,13 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 
     // ORDER BY
     if (line.startsWith('->orderBy') || line.startsWith('->addOrderBy')) {
-      const content = line.match(/'(.+?)',\s*'(.+?)'/);
+      const content = line.match(/\(\s*['"](.+?)['"]\s*,\s*['"](.+?)['"]\s*\)/);
       if (content) orderByClauses.push(`${content[1]} ${content[2].toUpperCase()}`);
     }
 
     // Params
     if (line.startsWith('->setParameter')) {
-      const param = line.match(/'(.+?)',\s*(.+)/);
+      const param = line.match(/\(\s*['"](.+?)['"]\s*,\s*(.+)\s*\)/);
       if (param) params[param[1]] = param[2];
     }
 
@@ -103,11 +195,11 @@ export function changeOrmToSql(input: string, targetDb: string): string {
     }
   }
 
-  // -----------------------------
-  // Substituir parâmetros nos WHERE / HAVING
-  // -----------------------------
+  // Substituir parâmetros
   const replaceParams = (clause: string) => {
     Object.entries(params).forEach(([key, val]) => {
+      val = val.trim().replace(/^\(+|\)+$/g, '');
+      val = val.replace(/->value$/, '');
       const finalVal = targetDb === 'oracle'
         ? (val === 'true' ? '1' : (val === 'false' ? '0' : val))
         : val;
@@ -116,17 +208,21 @@ export function changeOrmToSql(input: string, targetDb: string): string {
     return clause;
   };
 
-  const whereSql = whereClauses.length
-    ? 'WHERE ' + whereClauses.map(c => replaceParams(c)).join(' ')
-    : '';
+  let whereSql = '';
+  if (whereClauses.length) {
+    const [first, ...rest] = whereClauses;
+    whereSql = 'WHERE ' + first + ' ' + rest.join(' ');
+  }
 
-  const havingSql = havingClauses.length
-    ? 'HAVING ' + havingClauses.map(c => replaceParams(c)).join(' ')
-    : '';
+  let havingSql = '';
+  if (havingClauses.length) {
+    const [first, ...rest] = havingClauses;
+    havingSql = 'HAVING ' + first + ' ' + rest.join(' ');
+  }
 
-  // -----------------------------
-  // Ajuste de LIMIT/OFFSET conforme banco alvo
-  // -----------------------------
+  whereSql = replaceParams(whereSql);
+  havingSql = replaceParams(havingSql);
+
   let limitOffsetSql = '';
   if (limitLine || offsetLine) {
     if (targetDb === 'mysql' || targetDb === 'postgres') {
@@ -145,10 +241,7 @@ export function changeOrmToSql(input: string, targetDb: string): string {
     }
   }
 
-  // -----------------------------
-  // Montar SQL Final
-  // -----------------------------
-  sql += selectLines.join('\n') + '\n';
+  sql += selectLines.length > 0 ? selectLines[0] + '\n' : '';
   if (fromLine) sql += fromLine + '\n';
   if (joinLines.length) sql += joinLines.join('\n') + '\n';
   if (whereSql) sql += whereSql + '\n';
