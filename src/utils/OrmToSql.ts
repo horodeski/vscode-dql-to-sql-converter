@@ -1,3 +1,58 @@
+function parseExpr(expr: string): string {
+  let result = expr;
+
+  // Remove $qb->expr()
+  result = result.replace(/\$qb->expr\(\)->/g, '');
+
+  // eq('a', ':b') => a = :b
+  result = result.replace(/eq\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/g, "$1 = $2");
+
+  // lt('a', ':b') => a < :b
+  result = result.replace(/lt\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/g, "$1 < $2");
+
+  // gt('a', ':b') => a > :b
+  result = result.replace(/gt\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/g, "$1 > $2");
+
+  // lte('a', ':b') => a <= :b
+  result = result.replace(/lte\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/g, "$1 <= $2");
+
+  // gte('a', ':b') => a >= :b
+  result = result.replace(/gte\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/g, "$1 >= $2");
+
+  // in('a', :list) => a IN (:list)
+  result = result.replace(/in\(\s*'([^']+)'\s*,\s*([^)]*)\)/g, "$1 IN ($2)");
+
+  // Trata andX/orX com divisão respeitando parênteses
+  const parseX = (inner: string, separator: string) => {
+    const parts: string[] = [];
+    let current = '';
+    let parenLevel = 0;
+
+    for (let i = 0; i < inner.length; i++) {
+      const char = inner[i];
+      if (char === '(') parenLevel++;
+      if (char === ')') parenLevel--;
+      if (char === ',' && parenLevel === 0) {
+        if (current.trim()) parts.push(parseExpr(current.trim()));
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    if (current.trim()) parts.push(parseExpr(current.trim()));
+    return '(' + parts.join(` ${separator} `) + ')';
+  };
+
+  result = result.replace(/andX\(([\s\S]+?)\)/g, (_, inner) => parseX(inner, 'AND'));
+  result = result.replace(/orX\(([\s\S]+?)\)/g, (_, inner) => parseX(inner, 'OR'));
+
+  // Remove aspas ao redor de expressões completas
+  result = result.replace(/^'(.*)'$/, "$1");
+
+
+  return result.trim();
+}
+
 function splitSelectArguments(input: string): string[] {
   const args: string[] = [];
   let current = '';
@@ -34,11 +89,24 @@ function splitSelectArguments(input: string): string[] {
   return args;
 }
 
-// Junta chamadas multilinha como ->select('a', 'b', ... )
+// Junta chamadas multi-linha como ->select('a', 'b', ... ) ou joins
 function joinMultilineCalls(lines: string[]): string[] {
   const result = [];
   let buffer = '';
   let openParens = 0;
+
+  const isStartCall = (line: string) =>
+    line.startsWith('->select') ||
+    line.startsWith('->where') ||
+    line.startsWith('->andWhere') ||
+    line.startsWith('->orWhere') ||
+    line.startsWith('->groupBy') ||
+    line.startsWith('->having') ||
+    line.startsWith('->andHaving') ||
+    line.startsWith('->orHaving') ||
+    line.startsWith('->leftJoin') ||
+    line.startsWith('->innerJoin') ||
+    line.startsWith('->rightJoin');
 
   for (const line of lines) {
     if (buffer.length > 0) {
@@ -52,17 +120,7 @@ function joinMultilineCalls(lines: string[]): string[] {
         openParens = 0;
       }
     } else {
-      // Detecta início de chamadas
-      if (
-        line.startsWith('->select') ||
-        line.startsWith('->where') ||
-        line.startsWith('->andWhere') ||
-        line.startsWith('->orWhere') ||
-        line.startsWith('->groupBy') ||
-        line.startsWith('->having') ||
-        line.startsWith('->andHaving') ||
-        line.startsWith('->orHaving')
-      ) {
+      if (isStartCall(line)) {
         buffer = line;
         openParens = (line.match(/\(/g) || []).length - (line.match(/\)/g) || []).length;
 
@@ -123,7 +181,7 @@ export function changeOrmToSql(input: string, targetDb: string): string {
       }
     }
 
-    // JOINs
+    // JOINs (multi-linha agora suportado)
     if (
       line.startsWith('->leftJoin') ||
       line.startsWith('->innerJoin') ||
@@ -133,7 +191,7 @@ export function changeOrmToSql(input: string, targetDb: string): string {
         line.startsWith('->innerJoin') ? 'INNER JOIN' : 'RIGHT JOIN';
 
       const content = line.match(
-        /\(\s*(?:'([^']+)'|([A-Za-z_\\]+)::class)\s*,\s*'([^']+)'\s*,\s*(?:WITH|ON)\s*,\s*'([^']+)'\s*\)/
+        /\(\s*(?:'([^']+)'|([A-Za-z_\\]+)::class)\s*,\s*'([^']+)'\s*,\s*(?:'WITH'|'ON'|WITH|ON)\s*,\s*'([^']+)'\s*\)/i
       );
 
       if (content) {
@@ -141,16 +199,19 @@ export function changeOrmToSql(input: string, targetDb: string): string {
         const alias = content[3];
         const condition = content[4];
         joinLines.push(`${type} ${table} ${alias} ON ${condition}`);
+      } else {
+        console.warn('JOIN não reconhecido:', line);
       }
     }
 
     // WHERE / AND / OR WHERE
     if (line.startsWith('->where') || line.startsWith('->andWhere') || line.startsWith('->orWhere')) {
-      const content = line.match(/\(\s*['"](.+?)['"]\s*\)/);
+      const content = line.match(/\(([\s\S]+)\)/);
       if (content) {
-        if (line.startsWith('->where')) whereClauses.push(content[1]);
-        else if (line.startsWith('->andWhere')) whereClauses.push('AND ' + content[1]);
-        else if (line.startsWith('->orWhere')) whereClauses.push('OR ' + content[1]);
+        const parsed = parseExpr(content[1]);
+        if (line.startsWith('->where')) whereClauses.push(parsed);
+        else if (line.startsWith('->andWhere')) whereClauses.push('AND ' + parsed);
+        else if (line.startsWith('->orWhere')) whereClauses.push('OR ' + parsed);
       }
     }
 
@@ -200,11 +261,19 @@ export function changeOrmToSql(input: string, targetDb: string): string {
     Object.entries(params).forEach(([key, val]) => {
       val = val.trim().replace(/^\(+|\)+$/g, '');
       val = val.replace(/->value$/, '');
+
+      // Remove aspas externas, se houver
+      val = val.replace(/^['"]|['"]$/g, '');
+
+      // Converte booleans para Oracle, se necessário
       const finalVal = targetDb === 'oracle'
         ? (val === 'true' ? '1' : (val === 'false' ? '0' : val))
         : val;
+
+      // Substitui :param por finalVal
       clause = clause.replace(new RegExp(`:${key}\\b`, 'g'), finalVal);
     });
+
     return clause;
   };
 
