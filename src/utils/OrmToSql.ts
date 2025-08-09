@@ -227,7 +227,6 @@ function extractTableFromClass(classReference: string): string {
 export function changeOrmToSql(input: string, targetDb: string): string {
 	let sql = "";
 	const params: Record<string, string> = {};
-	console.log(input);
 	// Pre-process to handle complex subqueries with string concatenation
 	let processedInput = input;
 
@@ -299,7 +298,7 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 	let offsetLine = "";
 
 	for (const call of calls) {
-		// SELECT - improved handling of complex selects
+		// ->select
 		if (call.startsWith("select")) {
 			const selectMatch = call.match(/select\s*\(\s*([\s\S]*?)\s*\)(?:\s*->|$)/);
 			if (selectMatch) {
@@ -309,7 +308,7 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 			}
 		}
 
-		// FROM
+		// ->from
 		if (call.startsWith("from")) {
 			const content = call.match(/\(\s*(?:'([^']+)'|([A-Za-z_\\:]+))\s*,\s*'([^']+)'\s*\)/);
 			if (content) {
@@ -328,11 +327,40 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 			}
 		}
 
-		// JOINs - improved to handle full 4-parameter syntax
+		// ->join
 		if (call.startsWith("leftJoin") || call.startsWith("innerJoin") || call.startsWith("rightJoin")) {
 			const type = call.startsWith("leftJoin") ? "LEFT JOIN" : call.startsWith("innerJoin") ? "INNER JOIN" : "RIGHT JOIN";
 
-			// Pattern for 4 parameters: innerJoin(Class::class, 'alias', 'WITH', 'condition')
+			// Pattern for 4 parameters with expressions: innerJoin(Class::class, 'alias', 'WITH', $qb->expr()->andX(...))
+			let fourParamExprMatch = call.match(/(\w+Join)\(\s*([A-Za-z_\\:]+)\s*,\s*'([^']+)'\s*,\s*['"](WITH|ON)['"]\s*,\s*(.*)\s*\)$/);
+
+			if (fourParamExprMatch) {
+				const classOrTable = fourParamExprMatch[2];
+				const alias = fourParamExprMatch[3];
+				let condition = fourParamExprMatch[5];
+
+				// Extract table name from class
+				let tableName;
+				if (classOrTable.includes("::class") || classOrTable.includes("\\")) {
+					tableName = extractTableFromClass(classOrTable);
+				} else {
+					tableName = classOrTable;
+				}
+
+				// Handle expressions like $qb->expr()->andX(...)
+				if (condition.includes("$qb->expr()")) {
+					condition = parseExpr(condition);
+				}
+				// Handle simple string conditions (remove quotes)
+				else if ((condition.startsWith('"') && condition.endsWith('"')) || (condition.startsWith("'") && condition.endsWith("'"))) {
+					condition = condition.slice(1, -1);
+				}
+
+				joinLines.push(`${type} ${tableName} ${alias} ON ${condition}`);
+				continue;
+			}
+
+			// Pattern for 4 parameters with simple string conditions: innerJoin(Class::class, 'alias', 'WITH', 'condition')
 			let fourParamMatch = call.match(/(\w+Join)\(\s*([A-Za-z_\\:]+)\s*,\s*'([^']+)'\s*,\s*['"](WITH|ON)['"]\s*,\s*['"](.*?)['"]\s*\)/);
 
 			if (fourParamMatch) {
@@ -380,14 +408,11 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 				}
 			}
 		}
-
-		// WHERE / AND / OR WHERE - IMPROVED to handle multiple conditions in single where() call
+		// ->where
 		if (call.startsWith("where") || call.startsWith("andWhere") || call.startsWith("orWhere")) {
 			// Regex to capture all content between parentheses
-			console.log("call", call);
 			const content = call.match(/\(([\s\S]+)\)/);
 
-			console.log("content", content);
 			if (content) {
 				let whereContent = content[1].trim();
 				// Check if this is a single $qb->expr() call with multiple arguments
@@ -397,13 +422,8 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 					// Single expression method call - parse as one unit
 					let parsed = parseExpr(whereContent);
 					if (parsed && parsed.length > 0 && !parsed.includes("$qb->expr(")) {
-						if (call.startsWith("where")) {
-							whereClauses.push(parsed);
-						} else if (call.startsWith("andWhere")) {
-							whereClauses.push("AND " + parsed);
-						} else if (call.startsWith("orWhere")) {
-							whereClauses.push("OR " + parsed);
-						}
+						// Add clause without prepending AND or OR
+						whereClauses.push(parsed);
 					}
 				} else {
 					// Multiple separate arguments - split and process each
@@ -422,30 +442,21 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 
 						// Skip empty or malformed expressions
 						if (parsed && parsed.length > 0 && !parsed.includes("$qb->expr(")) {
-							if (call.startsWith("where")) {
-								if (i === 0) {
-									whereClauses.push(parsed);
-								} else {
-									whereClauses.push("AND " + parsed);
-								}
-							} else if (call.startsWith("andWhere")) {
-								whereClauses.push("AND " + parsed);
-							} else if (call.startsWith("orWhere")) {
-								whereClauses.push("OR " + parsed);
-							}
+							// Add clause without prepending AND or OR
+							whereClauses.push(parsed);
 						}
 					}
 				}
 			}
 		}
 
-		// GROUP BY
+		// ->groupBy
 		if (call.startsWith("groupBy")) {
 			const content = call.match(/\(\s*['"](.+?)['"]\s*\)/);
 			if (content) groupByClauses.push(content[1]);
 		}
 
-		// HAVING
+		// ->having
 		if (call.startsWith("having") || call.startsWith("andHaving") || call.startsWith("orHaving")) {
 			const content = call.match(/\(([\s\S]+?)\)(?:\s*->|$)/);
 			if (content) {
@@ -468,7 +479,7 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 			}
 		}
 
-		// ORDER BY (both orderBy and addOrderBy)
+		// ->orderBy
 		if (call.startsWith("orderBy") || call.startsWith("addOrderBy")) {
 			const content = call.match(/\(\s*['"](.+?)['"]\s*,\s*['"](.+?)['"]\s*\)/);
 			if (content) {
@@ -476,7 +487,7 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 			}
 		}
 
-		// PARAMETERS (both setParameters array and individual setParameter)
+		// ->setParameters
 		if (call.startsWith("setParameters")) {
 			const paramMatch = call.match(/setParameters\(\s*\[([\s\S]*?)\]\s*\)/);
 			if (paramMatch) {
@@ -496,7 +507,7 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 			}
 		}
 
-		// Individual setParameter calls
+		// ->setParameter
 		if (call.startsWith("setParameter")) {
 			const paramMatch = call.match(/setParameter\(\s*['"]([^'"]+)['"]\s*,\s*(.+?)\s*\)/);
 			if (paramMatch) {
@@ -518,13 +529,13 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 			}
 		}
 
-		// LIMIT
+		// ->setMaxResults
 		if (call.startsWith("setMaxResults")) {
 			const number = call.match(/\((\d+)\)/);
 			if (number) limitLine = `LIMIT ${number[1]}`;
 		}
-
-		// OFFSET
+		
+		// ->setFirstResult
 		if (call.startsWith("setFirstResult")) {
 			const number = call.match(/\((\d+)\)/);
 			if (number) offsetLine = `OFFSET ${number[1]}`;
@@ -565,13 +576,12 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 	};
 
 	// Apply parameter replacement to all clauses that might contain parameters
-	console.log(whereClauses);
 	const processedWhereClauses = whereClauses.map((clause) => replaceParams(clause));
 	const processedSelectLines = selectLines.map((line) => replaceParams(line));
 
 	let whereSql = "";
 	if (processedWhereClauses.length) {
-		// Split por vírgulas e join com AND - compatível com versões antigas
+		// Split by commas and join with AND
 		let clauses: string[] = [];
 		processedWhereClauses.forEach((clause) => {
 			const splitClauses = clause.split(",").map((c) => c.trim());
@@ -579,15 +589,28 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 		});
 
 		const validClauses = clauses.filter((clause) => clause.length > 0);
-		whereSql = "WHERE " + validClauses.join(" AND ");
-	}
+		// Handle OR conditions explicitly
+		if (validClauses.length) {
+			let sqlParts: string[] = [];
 
-	console.log("Processed WHERE clauses:", processedWhereClauses);
-	console.log("whereSql:", whereSql);
+			validClauses.forEach((clause, i) => {
+				if (clause.startsWith("OR ")) {
+					sqlParts.push(clause);
+				} else {
+					if (i === 0) {
+						sqlParts.push(clause);
+					} else {
+						sqlParts.push("AND " + clause);
+					}
+				}
+			});
+
+			whereSql = "WHERE " + sqlParts.join(" ");
+		}
+	}
 
 	let havingSql = "";
 	if (havingClauses.length) {
-		// Process having clauses similarly to where clauses
 		const processedHavingClauses = havingClauses.map((clause) => replaceParams(clause));
 		havingSql = "HAVING " + processedHavingClauses.join(" ");
 	}
