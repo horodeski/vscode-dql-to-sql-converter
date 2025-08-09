@@ -9,6 +9,19 @@
   "categories": [
     "Other"
   ],
+  "repository": {
+    "url": "https://github.com/horodeski/vscode-dql-to-sql-converter"
+  },
+  "homepage": "https://github.com/horodeski/vscode-dql-to-sql-converter",
+  "bugs": {
+    "url": "https://github.com/horodeski/vscode-dql-to-sql-converter/issues"
+  },
+  "publisher": "GeovanaSophiaHorodeski",
+  "icon": "extension/image.png",
+  "galleryBanner": {
+    "color": "#030518",
+    "theme": "dark"
+  },
   "activationEvents": [
     "onLanguage:php"
   ],
