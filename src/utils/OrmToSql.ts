@@ -1,31 +1,23 @@
 function parseExpr(expr: string): string {
 	let result = expr;
 
-	// Remove $qb->expr()
+	// Remove $qb->expr()->
 	result = result.replace(/\$qb->expr\(\)->/g, "");
 
-	// eq('a', ':b') => a = :b
-	result = result.replace(/eq\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/g, "$1 = $2");
-
-	// lt('a', ':b') => a < :b
-	result = result.replace(/lt\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/g, "$1 < $2");
-
-	// gt('a', ':b') => a > :b  - handles both quoted and function calls
-	result = result.replace(/gt\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/g, "$1 > $2");
-	result = result.replace(/gt\(\s*'?([^',)]+)'?\s*,\s*'([^']+)'\s*\)/g, "$1 > $2");
-
-	// lte('a', ':b') => a <= :b
-	result = result.replace(/lte\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/g, "$1 <= $2");
-
-	// gte('a', ':b') => a >= :b - handles both quoted and function calls
-	result = result.replace(/gte\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/g, "$1 >= $2");
-	result = result.replace(/gte\(\s*'?([^',)]+)'?\s*,\s*'([^']+)'\s*\)/g, "$1 >= $2");
-
-	// in('a', :list) => a IN (:list)
+	// Operadores básicos
+	result = result.replace(/gt\(\s*'([^']+)'\s*,\s*'?([^')]+)'?\s*\)/g, "$1 > $2");
+	result = result.replace(/lt\(\s*'([^']+)'\s*,\s*'?([^')]+)'?\s*\)/g, "$1 < $2");
+	result = result.replace(/eq\(\s*'([^']+)'\s*,\s*'?([^')]+)'?\s*\)/g, "$1 = $2");
+	result = result.replace(/lte\(\s*'([^']+)'\s*,\s*'?([^')]+)'?\s*\)/g, "$1 <= $2");
+	result = result.replace(/gte\(\s*'([^']+)'\s*,\s*'?([^')]+)'?\s*\)/g, "$1 >= $2");
+	result = result.replace(/neq\(\s*'([^']+)'\s*,\s*'?([^')]+)'?\s*\)/g, "$1 <> $2");
 	result = result.replace(/in\(\s*'([^']+)'\s*,\s*([^)]*)\)/g, "$1 IN ($2)");
+	result = result.replace(/notIn\(\s*'([^']+)'\s*,\s*([^)]*)\)/g, "$1 NOT IN ($2)");
+	result = result.replace(/isNotNull\(\s*'([^']+)'\s*\)/g, "$1 IS NOT NULL");
+	result = result.replace(/isNull\(\s*'([^']+)'\s*\)/g, "$1 IS NULL");
 
-	// Trata andX/orX com divisão respeitando parênteses
-	const parseX = (inner: string, separator: string) => {
+	// Funções compostas andX, orX (que recebem múltiplas expressões)
+	const parseX = (inner: string, separator: string): string => {
 		const parts: string[] = [];
 		let current = "";
 		let parenLevel = 0;
@@ -33,7 +25,7 @@ function parseExpr(expr: string): string {
 		for (let i = 0; i < inner.length; i++) {
 			const char = inner[i];
 			if (char === "(") parenLevel++;
-			if (char === ")") parenLevel--;
+			else if (char === ")") parenLevel--;
 			if (char === "," && parenLevel === 0) {
 				if (current.trim()) parts.push(parseExpr(current.trim()));
 				current = "";
@@ -42,40 +34,44 @@ function parseExpr(expr: string): string {
 			}
 		}
 		if (current.trim()) parts.push(parseExpr(current.trim()));
+
 		return "(" + parts.join(` ${separator} `) + ")";
 	};
 
-	result = result.replace(/andX\(([\s\S]+?)\)/g, (_, inner) => parseX(inner, "AND"));
-	result = result.replace(/orX\(([\s\S]+?)\)/g, (_, inner) => parseX(inner, "OR"));
+	// Detecta andX(...)
+	const andXMatch = result.match(/^andX\(([\s\S]*)\)$/);
+	if (andXMatch) {
+		return parseX(andXMatch[1], "AND");
+	}
 
-	// Remove aspas ao redor de expressões completas
-	result = result.replace(/^'(.*)'$/, "$1");
+	// Detecta orX(...)
+	const orXMatch = result.match(/^orX\(([\s\S]*)\)$/);
+	if (orXMatch) {
+		return parseX(orXMatch[1], "OR");
+	}
 
-	return result.trim();
+	return result;
 }
 
 function parseSubquery(subqueryString: string): string {
 	// More robust subquery extraction
-	const patterns = [
-		/\$em->createQueryBuilder\(\)([\s\S]*?)(?:->getDQL\(\)|$)/,
-		/createQueryBuilder\(\)([\s\S]*?)(?:->getDQL\(\)|$)/
-	];
-	
+	const patterns = [/\$em->createQueryBuilder\(\)([\s\S]*?)(?:->getDQL\(\)|$)/, /createQueryBuilder\(\)([\s\S]*?)(?:->getDQL\(\)|$)/];
+
 	let subqueryMatch = null;
 	for (const pattern of patterns) {
 		subqueryMatch = subqueryString.match(pattern);
 		if (subqueryMatch) break;
 	}
-	
+
 	if (!subqueryMatch) {
 		return "SUBQUERY_ERROR";
 	}
 
 	const subqueryContent = subqueryMatch[1];
-	
+
 	// Parse the subquery using the same logic as the main query
 	const subquerySql = changeOrmToSql(subqueryContent, "mysql");
-	
+
 	// Return as parenthesized subquery
 	return `(${subquerySql})`;
 }
@@ -119,9 +115,49 @@ function splitSelectArguments(input: string) {
 	return args;
 }
 
+// Improved function to split WHERE arguments that can contain complex expressions
+function splitWhereArguments(input: string) {
+	const args: string[] = [];
+	let current = "";
+	let parenCount = 0;
+	let inQuotes = false;
+	let quoteChar = "";
+
+	for (let i = 0; i < input.length; i++) {
+		const char = input[i];
+		const prev = i > 0 ? input[i - 1] : "";
+
+		if ((char === '"' || char === "'") && prev !== "\\") {
+			if (inQuotes && char === quoteChar) {
+				inQuotes = false;
+				quoteChar = "";
+			} else if (!inQuotes) {
+				inQuotes = true;
+				quoteChar = char;
+			}
+			current += char;
+		} else if (!inQuotes && char === "(") {
+			parenCount++;
+			current += char;
+		} else if (!inQuotes && char === ")") {
+			parenCount--;
+			current += char;
+		} else if (!inQuotes && parenCount === 0 && char === ",") {
+			args.push(current.trim());
+			current = "";
+		} else {
+			current += char;
+		}
+	}
+
+	if (current.trim() !== "") args.push(current.trim());
+
+	return args;
+}
+
 function processComplexSelectArgument(arg: string): string {
 	arg = arg.trim();
-	
+
 	// Handle string concatenation with subqueries
 	if (arg.includes("'") && arg.includes(".") && arg.includes("$em->createQueryBuilder()")) {
 		// Pattern: '(' . $em->createQueryBuilder()...->getDQL() . ') AS alias'
@@ -131,12 +167,12 @@ function processComplexSelectArgument(arg: string): string {
 			const subqueryPart = concatenationMatch[2];
 			const suffix = concatenationMatch[3];
 			const asClause = concatenationMatch[4] || "";
-			
+
 			const subquerySql = parseSubquery(subqueryPart);
 			return `${prefix}${subquerySql}${suffix} ${asClause}`.trim();
 		}
 	}
-	
+
 	// Handle standalone subqueries
 	if (arg.includes("$em->createQueryBuilder()")) {
 		const subquerySql = parseSubquery(arg);
@@ -144,52 +180,71 @@ function processComplexSelectArgument(arg: string): string {
 		const asMatch = arg.match(/AS\s+(\w+)/i);
 		return asMatch ? `${subquerySql} AS ${asMatch[1]}` : subquerySql;
 	}
-	
+
 	// Remove outer quotes only if they wrap the entire argument and it's not a complex expression
 	if ((arg.startsWith("'") && arg.endsWith("'")) || (arg.startsWith('"') && arg.endsWith('"'))) {
 		const inner = arg.slice(1, -1);
-		
+
 		// If it contains a processed subquery, keep it as is
 		if (inner.includes("SELECT ") || inner.startsWith("(SELECT")) {
 			return inner;
 		}
-		
+
 		// If it's a simple string without special SQL syntax, remove quotes
-		if (!inner.includes("CASE ") && !inner.includes("SUM(") && !inner.includes("COUNT(") && 
-			!inner.includes("AVG(") && !inner.includes("MAX(") && !inner.includes("MIN(")) {
+		if (
+			!inner.includes("CASE ") &&
+			!inner.includes("SUM(") &&
+			!inner.includes("COUNT(") &&
+			!inner.includes("AVG(") &&
+			!inner.includes("MAX(") &&
+			!inner.includes("MIN(")
+		) {
 			return inner;
 		}
-		
+
 		return inner;
 	}
-	
+
 	return arg;
+}
+
+// Improved function to extract table name from class
+function extractTableFromClass(classReference: string): string {
+	// Remove ::class if present
+	let tableName = classReference.replace("::class", "");
+
+	// Remove namespace if present (App\Entity\, etc.)
+	tableName = tableName.replace(/^.*\\/, "");
+
+	// Convert remaining camelCase/PascalCase to lowercase
+	tableName = tableName
+		.replace(/([a-z])([A-Z])/g, "$1$2") // Handle normal camelCase
+		.toLowerCase();
+
+	return tableName;
 }
 
 export function changeOrmToSql(input: string, targetDb: string): string {
 	let sql = "";
 	const params: Record<string, string> = {};
-
+	console.log(input);
 	// Pre-process to handle complex subqueries with string concatenation
 	let processedInput = input;
-	
+
 	// Handle complex subqueries with concatenation - improved regex to handle nested parentheses
 	processedInput = processedInput.replace(
 		/'([^']*)'?\s*\.\s*(\$em->createQueryBuilder\(\)[\s\S]*?->getDQL\(\))\s*\.\s*'([^']*)'\s*(AS\s+\w+)?/gi,
 		(match, prefix, subqueryPart, suffix, asClause) => {
 			const subquerySql = parseSubquery(subqueryPart);
-			return `'${prefix}${subquerySql}${suffix}' ${asClause || ''}`.trim();
+			return `'${prefix}${subquerySql}${suffix}' ${asClause || ""}`.trim();
 		}
 	);
 
 	// Also handle cases where the subquery is standalone
-	processedInput = processedInput.replace(
-		/\$em->createQueryBuilder\(\)([\s\S]*?)(?:->getDQL\(\)|(?=\s*\)\s*AS))/g,
-		(match, subqueryContent) => {
-			const subquerySql = parseSubquery(match);
-			return subquerySql;
-		}
-	);
+	processedInput = processedInput.replace(/\$em->createQueryBuilder\(\)([\s\S]*?)(?:->getDQL\(\)|(?=\s*\)\s*AS))/g, (match, subqueryContent) => {
+		const subquerySql = parseSubquery(match);
+		return subquerySql;
+	});
 
 	// Normalize input: preserve structure but clean up spacing
 	let normalizedInput = processedInput
@@ -203,11 +258,11 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 	let parenDepth = 0;
 	let inString = false;
 	let stringChar = "";
-	
+
 	for (let i = 0; i < normalizedInput.length; i++) {
 		const char = normalizedInput[i];
 		const prev = i > 0 ? normalizedInput[i - 1] : "";
-		
+
 		if (!inString && (char === "'" || char === '"') && prev !== "\\") {
 			inString = true;
 			stringChar = char;
@@ -215,11 +270,11 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 			inString = false;
 			stringChar = "";
 		}
-		
+
 		if (!inString) {
 			if (char === "(") parenDepth++;
 			if (char === ")") parenDepth--;
-			
+
 			if (char === "-" && normalizedInput[i + 1] === ">" && parenDepth === 0) {
 				if (current.trim()) calls.push(current.trim());
 				current = "";
@@ -227,10 +282,10 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 				continue;
 			}
 		}
-		
+
 		current += char;
 	}
-	
+
 	if (current.trim()) calls.push(current.trim());
 
 	const selectLines: string[] = [];
@@ -256,33 +311,64 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 
 		// FROM
 		if (call.startsWith("from")) {
-			const content = call.match(/\(\s*(?:'([^']+)'|([A-Za-z_\\]+)::class)\s*,\s*'([^']+)'\s*\)/);
+			const content = call.match(/\(\s*(?:'([^']+)'|([A-Za-z_\\:]+))\s*,\s*'([^']+)'\s*\)/);
 			if (content) {
-				const table = (content[1] || content[2]).replace("::class", "").replace(/^App\\Entity\\/, "");
+				const classOrTable = content[1] || content[2];
 				const alias = content[3];
+
+				// If contains ::class, extract table name
+				let table;
+				if (classOrTable.includes("::class") || classOrTable.includes("\\")) {
+					table = extractTableFromClass(classOrTable);
+				} else {
+					table = classOrTable;
+				}
+
 				fromLine = `FROM ${table} ${alias}`;
 			}
 		}
 
-		// JOINs - improved handling with better regex
+		// JOINs - improved to handle full 4-parameter syntax
 		if (call.startsWith("leftJoin") || call.startsWith("innerJoin") || call.startsWith("rightJoin")) {
 			const type = call.startsWith("leftJoin") ? "LEFT JOIN" : call.startsWith("innerJoin") ? "INNER JOIN" : "RIGHT JOIN";
-			
-			// Handle different join patterns including WITH conditions
-			let joinMatch = call.match(/(\w+Join)\(\s*'([^']+)'\s*,\s*'([^']+)'\s*(?:,\s*[^,]*,\s*'([^']+)'|,\s*Expr\\Join::WITH,\s*'([^']+)')?\s*\)/);
-			
+
+			// Pattern for 4 parameters: innerJoin(Class::class, 'alias', 'WITH', 'condition')
+			let fourParamMatch = call.match(/(\w+Join)\(\s*([A-Za-z_\\:]+)\s*,\s*'([^']+)'\s*,\s*['"](WITH|ON)['"]\s*,\s*['"](.*?)['"]\s*\)/);
+
+			if (fourParamMatch) {
+				const classOrTable = fourParamMatch[2];
+				const alias = fourParamMatch[3];
+				const condition = fourParamMatch[5];
+
+				// Extract table name from class
+				let tableName;
+				if (classOrTable.includes("::class") || classOrTable.includes("\\")) {
+					tableName = extractTableFromClass(classOrTable);
+				} else {
+					tableName = classOrTable;
+				}
+
+				joinLines.push(`${type} ${tableName} ${alias} ON ${condition}`);
+				continue;
+			}
+
+			// Original pattern for relationships
+			let joinMatch = call.match(
+				/(\w+Join)\(\s*'([^']+)'\s*,\s*'([^']+)'\s*(?:,\s*[^,]*,\s*'([^']+)'|,\s*Expr\\Join::WITH,\s*'([^']+)')?\s*\)/
+			);
+
 			if (joinMatch) {
 				const relation = joinMatch[2];
 				const alias = joinMatch[3];
 				let condition = joinMatch[4] || joinMatch[5] || "";
-				
+
 				if (relation.includes(".")) {
 					const [parentAlias, relationName] = relation.split(".");
 					// Convert entity relation to table name (add proper pluralization)
 					let tableName = relationName.toLowerCase();
-					if (relationName === 'category') tableName = 'categories';
-					else if (!tableName.endsWith('s')) tableName += 's';
-					
+					if (relationName === "category") tableName = "categories";
+					else if (!tableName.endsWith("s")) tableName += "s";
+
 					if (!condition) {
 						condition = `${parentAlias}.id = ${alias}.${parentAlias}_id`;
 					}
@@ -295,25 +381,60 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 			}
 		}
 
-		// WHERE / AND / OR WHERE
+		// WHERE / AND / OR WHERE - IMPROVED to handle multiple conditions in single where() call
 		if (call.startsWith("where") || call.startsWith("andWhere") || call.startsWith("orWhere")) {
-			const content = call.match(/\(([\s\S]+?)\)(?:\s*->|$)/);
+			// Regex to capture all content between parentheses
+			console.log("call", call);
+			const content = call.match(/\(([\s\S]+)\)/);
+
+			console.log("content", content);
 			if (content) {
-				let parsed = content[1].trim();
-				
-				// Handle $qb->expr() calls - extract the actual expression
-				if (parsed.includes("$qb->expr()->")) {
-					parsed = parseExpr(parsed);
+				let whereContent = content[1].trim();
+				// Check if this is a single $qb->expr() call with multiple arguments
+				const exprCallMatch = whereContent.match(/^\s*\$qb->expr\(\)->\w+\s*\(/);
+
+				if (exprCallMatch) {
+					// Single expression method call - parse as one unit
+					let parsed = parseExpr(whereContent);
+					if (parsed && parsed.length > 0 && !parsed.includes("$qb->expr(")) {
+						if (call.startsWith("where")) {
+							whereClauses.push(parsed);
+						} else if (call.startsWith("andWhere")) {
+							whereClauses.push("AND " + parsed);
+						} else if (call.startsWith("orWhere")) {
+							whereClauses.push("OR " + parsed);
+						}
+					}
 				} else {
-					// Simple string condition - remove quotes
-					parsed = parsed.replace(/^['"]|['"]$/g, "");
-				}
-				
-				// Skip empty or malformed expressions
-				if (parsed && !parsed.includes("$qb->expr(")) {
-					if (call.startsWith("where")) whereClauses.push(parsed);
-					else if (call.startsWith("andWhere")) whereClauses.push("AND " + parsed);
-					else if (call.startsWith("orWhere")) whereClauses.push("OR " + parsed);
+					// Multiple separate arguments - split and process each
+					const whereArgs = splitWhereArguments(whereContent);
+
+					for (let i = 0; i < whereArgs.length; i++) {
+						let parsed = whereArgs[i].trim();
+
+						// Handle $qb->expr() calls - extract the actual expression
+						if (parsed.includes("$qb->expr()->")) {
+							parsed = parseExpr(parsed);
+						} else {
+							// Simple string condition - remove quotes
+							parsed = parsed.replace(/^['"]|['"]$/g, "");
+						}
+
+						// Skip empty or malformed expressions
+						if (parsed && parsed.length > 0 && !parsed.includes("$qb->expr(")) {
+							if (call.startsWith("where")) {
+								if (i === 0) {
+									whereClauses.push(parsed);
+								} else {
+									whereClauses.push("AND " + parsed);
+								}
+							} else if (call.startsWith("andWhere")) {
+								whereClauses.push("AND " + parsed);
+							} else if (call.startsWith("orWhere")) {
+								whereClauses.push("OR " + parsed);
+							}
+						}
+					}
 				}
 			}
 		}
@@ -329,7 +450,7 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 			const content = call.match(/\(([\s\S]+?)\)(?:\s*->|$)/);
 			if (content) {
 				let parsed = content[1].trim();
-				
+
 				// Handle $qb->expr() calls - extract the actual expression
 				if (parsed.includes("$qb->expr()->")) {
 					parsed = parseExpr(parsed);
@@ -337,7 +458,7 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 					// Simple string condition - remove quotes
 					parsed = parsed.replace(/^['"]|['"]$/g, "");
 				}
-				
+
 				// Skip empty or malformed expressions
 				if (parsed && !parsed.includes("$qb->expr(")) {
 					if (call.startsWith("having")) havingClauses.push(parsed);
@@ -374,21 +495,25 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 				}
 			}
 		}
-		
+
 		// Individual setParameter calls
 		if (call.startsWith("setParameter")) {
 			const paramMatch = call.match(/setParameter\(\s*['"]([^'"]+)['"]\s*,\s*(.+?)\s*\)/);
 			if (paramMatch) {
 				const key = paramMatch[1];
 				let val = paramMatch[2].trim();
-				
+
 				// Handle arrays like ['completed', 'shipped']
 				if (val.startsWith("[") && val.endsWith("]")) {
-					val = val.slice(1, -1).split(",").map(v => v.trim().replace(/^['"]|['"]$/g, "")).join(", ");
+					val = val
+						.slice(1, -1)
+						.split(",")
+						.map((v) => v.trim().replace(/^['"]|['"]$/g, ""))
+						.join(", ");
 				} else {
 					val = val.replace(/^['"]|['"]$/g, "");
 				}
-				
+
 				params[key] = val;
 			}
 		}
@@ -413,14 +538,17 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 				.trim()
 				.replace(/^\(+|\)+$/g, "")
 				.replace(/->value$/, "");
-				
+
 			// Handle different value types
 			let finalVal;
 			if (val === "true" || val === "false") {
 				finalVal = val === "true" ? "1" : "0"; // Convert boolean to SQL
 			} else if (val.includes(",") && !val.startsWith("(")) {
 				// Array values like "completed, shipped" should be quoted individually and not double-wrapped
-				const arrayValues = val.split(",").map(v => `'${v.trim()}'`).join(", ");
+				const arrayValues = val
+					.split(",")
+					.map((v) => `'${v.trim()}'`)
+					.join(", ");
 				finalVal = `(${arrayValues})`;
 			} else if (val.startsWith("$") || val.includes("Date")) {
 				// Keep parameter placeholders and date variables as is
@@ -430,21 +558,32 @@ export function changeOrmToSql(input: string, targetDb: string): string {
 			} else {
 				finalVal = val;
 			}
-			
+
 			clause = clause.replace(new RegExp(`:${key}\\b`, "g"), finalVal);
 		});
 		return clause;
 	};
 
 	// Apply parameter replacement to all clauses that might contain parameters
+	console.log(whereClauses);
 	const processedWhereClauses = whereClauses.map((clause) => replaceParams(clause));
 	const processedSelectLines = selectLines.map((line) => replaceParams(line));
 
 	let whereSql = "";
 	if (processedWhereClauses.length) {
-		// Join WHERE clauses properly - first one gets "WHERE", rest are joined with spaces
-		whereSql = "WHERE " + processedWhereClauses.join(" ");
+		// Split por vírgulas e join com AND - compatível com versões antigas
+		let clauses: string[] = [];
+		processedWhereClauses.forEach((clause) => {
+			const splitClauses = clause.split(",").map((c) => c.trim());
+			clauses = clauses.concat(splitClauses);
+		});
+
+		const validClauses = clauses.filter((clause) => clause.length > 0);
+		whereSql = "WHERE " + validClauses.join(" AND ");
 	}
+
+	console.log("Processed WHERE clauses:", processedWhereClauses);
+	console.log("whereSql:", whereSql);
 
 	let havingSql = "";
 	if (havingClauses.length) {
