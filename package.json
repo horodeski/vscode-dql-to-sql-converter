@@ -1,97 +1,57 @@
 {
   "name": "dql-to-sql",
-  "displayName": "Doctrine DQL to SQL Converter",
-  "description": "",
-  "version": "0.0.5",
+  "displayName": "Doctrine to SQL Hover",
+  "description": "Converte queries Doctrine ORM em SQL e mostra no hover e CodeLens",
+  "version": "0.1.0",
   "engines": {
-    "vscode": "^1.74.0"
+    "vscode": "^1.60.0"
   },
-  "activationEvents": [
-    "onView:base-view-sidebar"
-  ],
   "categories": [
     "Other"
   ],
-  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:php"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "extension.verSQL",
+        "title": "Ver SQL do Doctrine QueryBuilder"
+      }
+    ],
+    "languages": [
+      {
+        "id": "php",
+        "extensions": [
+          ".php"
+        ],
+        "aliases": [
+          "PHP",
+          "php"
+        ]
+      }
+    ]
+  },
+  "activationEvents": [
+    "onLanguage:php"
+  ],
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "concurrently \"tsc -p ./tsconfig.extension.json --skipLibCheck\" \"vite build\" \"tailwindcss -i ./src/assets/css/main.css -o ./dist/output.css\"",
-    "watch": "concurrently \"tsc -w -p ./tsconfig.extension.json --skipLibCheck\" \"vite build --watch\" \"tailwindcss -i ./src/assets/css/main.css -o ./dist/output.css --watch\"",
-    "lint": "eslint \"src/**/*.{ts,vue}\"",
-    "typecheck": "vue-tsc --noEmit --skipLibCheck",
-    "test": "vitest",
-    "test:ui": "vitest --ui"
-  },
-  "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "sql-converter",
-          "title": "SQL converter",
-          "icon": "extension/Vector.svg"
-        }
-      ]
-    },
-    "views": {
-      "sql-converter": [
-        {
-          "type": "webview",
-          "id": "base-view-sidebar",
-          "name": "SQL converter",
-          "icon": "extension/Vector.svg",
-          "contextualTitle": "SQL converter"
-        }
-      ]
-    }
-  },
-  "dependencies": {
-    "@intlify/unplugin-vue-i18n": "^0.8.1",
-    "@vitest/ui": "^0.26.2",
-    "vue": "^3.2.45",
-    "vue-i18n": "9"
-  },
-  "publisher": "GeovanaSophiaHorodeski",
-  "icon": "extension/image.png",
-  "galleryBanner": {
-    "color": "#030518",
-    "theme": "dark"
-  },
-  "keywords": [
-    "php",
-    "sql",
-    "doctrine",
-    "orm",
-    "postgres",
-    "oracle",
-    "mysql"
-  ],
-  "repository": {
-    "url": "https://github.com/horodeski/vscode-dql-to-sql-converter"
-  },
-  "homepage": "https://github.com/horodeski/vscode-dql-to-sql-converter",
-  "bugs": {
-    "url": "https://github.com/horodeski/vscode-dql-to-sql-converter/issues"
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
-    "@iconify-json/mdi": "^1.1.39",
-    "@testing-library/jest-dom": "^5.16.5",
-    "@testing-library/user-event": "^14.4.3",
-    "@testing-library/vue": "^6.6.1",
-    "@types/jest": "^29.2.4",
-    "@types/node": "^18.11.17",
-    "@types/vscode": "^1.73.0",
-    "@typescript-eslint/eslint-plugin": "^5.42.0",
-    "@typescript-eslint/parser": "^5.42.0",
-    "@vitejs/plugin-vue": "^2.3.3",
-    "concurrently": "^7.6.0",
-    "eslint": "^8.30.0",
-    "eslint-plugin-vue": "^9.8.0",
-    "jsdom": "^20.0.3",
-    "tailwindcss": "^3.2.4",
-    "typescript": "^4.8.4",
-    "unplugin-icons": "^0.14.15",
-    "vite": "^2.9.14",
-    "vitest": "^0.26.2",
-    "vue-tsc": "^0.40.6"
+    "@types/node": "^14.17.0",
+    "@types/node-fetch": "^2.6.13",
+    "@types/vscode": "^1.60.0",
+    "node-fetch": "^2.6.1",
+    "tslint": "^6.1.3",
+    "typescript": "^4.4.3"
+  },
+  "dependencies": {
+    "node-fetch": "^2.6.1"
   }
 }
